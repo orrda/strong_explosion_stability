@@ -6,7 +6,7 @@ import scipy.optimize
 
 from PDE import *
 
-sample_rate = 1000
+sample_rate = 100
 
 class solution:
     """
@@ -92,21 +92,29 @@ class solution:
             self.delt = 0
         if self.omega > 3.26:
             delta_infimum, delta_suprimum = self.check_DB(self.omega)
-            if delta_infimum == delta_suprimum:
+            func = lambda delt: self.find_delta_helper(delt)
+            print("delta_infimum is ", delta_infimum, "delta_suprimum is ", delta_suprimum)
+            print("func(inf)", func(delta_infimum), ",func(sup)", func(delta_suprimum))
+            if func(delta_infimum) == func(delta_suprimum):
                 self.delt = delta_infimum
             else:
-                func = lambda delt: self.find_delta_helper(delt)
-                print("delta_infimum is ", delta_infimum, "delta_suprimum is ", delta_suprimum)
-                print("func(inf)", func(delta_infimum), ", func(sup)", func(delta_suprimum))
+                if func(delta_infimum) * func(delta_suprimum) > 0:
+                    while func(delta_suprimum) < 0:
+                        delta_suprimum = 2*delta_suprimum - delta_infimum
+                        print("delta_suprimum is ", delta_suprimum)
+                    while func(delta_infimum) > 0:
+                        delta_infimum = 2*delta_infimum - delta_suprimum
+                        print("delta_infimum is ", delta_infimum)
+
                 root = scipy.optimize.root_scalar(
-                        self.find_delta_helper, 
+                        func, 
                         method = 'brentq',
                         bracket = [delta_infimum,delta_suprimum],
-                        maxiter=100
+                        maxiter = 1000
                     )
                 print("for omega =", self.omega, ", delta =", root)
                 self.delt = root.root
-                
+
                 self.save_DB(self.omega, self.delt)
         self.last_x = self.last_X()
         return self.delt
@@ -178,23 +186,49 @@ class solution:
         return self.U, self.C
 
     def last_X(self):
-        """
+
         approx, is_there = self.check_last_x_DB()
         if is_there:
             return approx
 
-        """
+
+        if self.omega < 2:
+            return 1
         
         solu = solve_PDE(self.omega, self.delt, gamma=self.gamma)
         x = scipy.optimize.root_scalar(
                 lambda x: self.get_delta_for_last_x(solu, x),
                 method='brentq',
                 bracket=[0, 1],
+                x0=approx,
                 maxiter=100
             )
         self.last_x = x.root
-        #self.save_last_x_DB(self.last_x)
+        self.save_last_x_DB(self.last_x)
         return self.last_x
+
+    def save_last_x_DB(self, last_x):
+        path = "DB\\last_x.npy"
+        data = np.load(path)
+        last = [self.omega, self.delt,last_x]
+        data = np.append(data, [last], axis=0)
+        np.save(path, data)
+
+    def check_last_x_DB(self):
+        path = "DB\\last_x.npy"
+        data = np.load(path)
+        omegas = data[:,0]
+        deltas = data[:,1]
+        last_xs = data[:,2]
+
+        min = 100
+
+        for i in range(len(omegas)):
+            dist = np.sqrt((self.omega - omegas[i])**2 + (self.delt - deltas[i])**2)
+            if dist < min:
+                min = dist
+                approx = last_xs[i]
+        return approx, min == 0
 
     def get_delta_for_last_x(self, solu, x):
         """

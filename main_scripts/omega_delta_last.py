@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-omegas = np.linspace(2.00, 4, 30)
-deltas = np.linspace(-0.5, 0.5, 30)
+omegas = np.linspace(2.00, 7, 50)
+deltas = np.linspace(-0.5, 1.5, 50)
 
 last_xs = np.zeros((len(omegas), len(deltas)))
 
@@ -17,6 +17,8 @@ for i, omega in enumerate(omegas):
         sol = solution(omega, delt)
         if sol.last_x is not None:
             last_xs[i, j] = sol.last_x
+
+print(last_xs)
 
 plt.imshow(last_xs, extent=[deltas[0], deltas[-1], omegas[0], omegas[-1]], aspect='auto')
 plt.colorbar()
