@@ -31,9 +31,13 @@ def ode_sys_by_xi(xi, UC, omega, delt, gamma):
     U=UC[0]
     C=UC[1]
 
+    deltt = (delta(U, C) * xi)
+    #if abs(deltt) < 1e-20:
+    #     deltt = 1e-20
 
-    dU_dx = delta1_xi(U, C, omega, delt, gamma)/(delta(U, C) * xi)
-    dC_dx = delta2_xi(U, C, omega, delt, gamma)/(delta(U, C) * xi)
+
+    dU_dx = delta1_xi(U, C, omega, delt, gamma)/deltt
+    dC_dx = delta2_xi(U, C, omega, delt, gamma)/deltt
 
     return [dU_dx, dC_dx]
 
@@ -57,22 +61,15 @@ def ode_sys_indi_x(x, UC, omega, lambd, gamma):
 
 
 def event_sonic(x, UC):
-    U=UC[0]
-    C=UC[1]
-
-    return C + U - 1
+    return UC[1]**2 - (1 - UC[0])**2
 
 def event_neg_C(x, UC):
-    C=UC[1]
-    return C
+    return UC[1]
 
-def event_large_C(x, UC):
-    C=UC[1]
-    return 2 - C
+def event_diverging(x, UC):
+    return 10 - UC[0]**2 - UC[1]**2
 
-def event_large_U(x, UC):
-    U=UC[0]
-    return U - 1
+
 
 
 def solve_PDE(omega, delt, x_begin = 1, x_end = 0, gamma = 5/3):
@@ -83,8 +80,7 @@ def solve_PDE(omega, delt, x_begin = 1, x_end = 0, gamma = 5/3):
 
     event_sonic.terminal = True
     event_neg_C.terminal = True
-    event_large_U.terminal = True
-    event_large_C.terminal = True
+    event_diverging.terminal = True
 
 
     num_sol = solve_ivp(
@@ -93,8 +89,8 @@ def solve_PDE(omega, delt, x_begin = 1, x_end = 0, gamma = 5/3):
         [U_init, C_init], 
         method='RK45', 
         dense_output=True,
-        events = [event_sonic, event_neg_C],
-        max_step = 0.01
+        events = [event_sonic, event_diverging, event_neg_C],
+        max_step = 0.001
     )
 
     return num_sol

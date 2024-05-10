@@ -6,7 +6,7 @@ import scipy.optimize
 
 from PDE import *
 
-sample_rate = 100
+sample_rate = 1000000
 
 class solution:
     """
@@ -71,7 +71,6 @@ class solution:
             self.delt = self.find_delta()
         else:
             self.delt = delt
-            self.last_x = self.last_X()
         self.U_deriv = None
         self.C_deriv = None
         self.G_deriv = None
@@ -94,7 +93,6 @@ class solution:
             delta_infimum, delta_suprimum = self.check_DB(self.omega)
             func = lambda delt: self.find_delta_helper(delt)
             print("delta_infimum is ", delta_infimum, "delta_suprimum is ", delta_suprimum)
-            print("func(inf)", func(delta_infimum), ",func(sup)", func(delta_suprimum))
             if func(delta_infimum) == func(delta_suprimum):
                 self.delt = delta_infimum
             else:
@@ -112,7 +110,6 @@ class solution:
                         bracket = [delta_infimum,delta_suprimum],
                         maxiter = 1000
                     )
-                print("for omega =", self.omega, ", delta =", root)
                 self.delt = root.root
 
                 self.save_DB(self.omega, self.delt)
@@ -131,7 +128,6 @@ class solution:
         """
         sol = solution(self.omega, delt)
         diff = sol.sonic_U() - sol.singuler_U()
-        print("for omega =", self.omega, ", delta =", delt, ", diff is - ", diff)
         return diff
 
 
@@ -139,7 +135,6 @@ class solution:
         path = "DB\\omega_delta.npy"
         data = np.load(path)
 
-        print("data is ", data)
         omegas = data[:,0]
         deltas = data[:,1]
 
@@ -259,9 +254,29 @@ class solution:
         elif self.omega <= 3.25 and self.omega >= 2:
             return 1
         else:
+            if self.last_x is None:
+                self.last_x = self.last_X()
             last = self.last_x
             U, C = self.get_UC(x_space=np.linspace(1, last, sample_rate))
             return U[-1]
+
+    def fast_last_x(self):
+        if not self.last_x is None:
+            return self.last_x
+        U, C = self.get_UC()
+        for i in range(len(U)):
+            if self.omega <= 2:
+                if U[i] <= 1/self.gamma:
+                    print("touched U = ", 1/self.gamma, ", xi = ", self.xi[i])
+                    return self.xi[i]
+            if U[i]**2 + C[i]**2 > 10:
+                print("escaped radius 10, last location - is U = ", U[i-1], ", C is ", C[i], "xi is ", self.xi[i-1])
+                return self.xi[i]
+            if C[i]**2 - (1 - U[i])**2 <= 0:
+                print("crossed sonic line at - U = ", U[i], "C = ", C[i], "xi = ", self.xi[i])
+                return self.xi[i]
+        return 1
+
 
     def singuler_U(self):
         """
@@ -365,6 +380,8 @@ class solution:
         """
         if self.MM is not None:
             return self.MM
+        if self.last_x is None:
+            self.last_x = self.last_X()
         xi_begin = self.last_x
         print("xi_begin is ", xi_begin)    
         xi_begin = int(xi_begin * self.precision)
