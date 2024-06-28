@@ -6,46 +6,9 @@ import scipy.optimize
 
 from PDE import *
 
-sample_rate = 1000000
+sample_rate = 100000
 
 class solution:
-    """
-    Represents a solution to a PDE problem.
-
-    Attributes:
-    - omega: The value of omega.
-    - delt: The value of delt.
-    - gamma: The value of gamma.
-    - last_x_approx: The last x approximation.
-    - last_delta_approx: The last delta approximation.
-    - xi: The array of xi values.
-    - precision: The precision value.
-    - last_x: The last x value.
-    - U: The U array.
-    - C: The C array.
-    - G: The G array.
-    - P: The P array.
-    - U_deriv: The U derivative array.
-    - C_deriv: The C derivative array.
-    - G_deriv: The G derivative array.
-    - P_deriv: The P derivative array.
-    - MM: The MM array.
-    - MM_inv: The inverse of MM array.
-
-    Methods:
-    - find_delta: Finds the value of delta.
-    - find_delta_helper: Helper function for finding delta.
-    - get_UC: Gets the U and C arrays.
-    - last_X: Finds the last x value.
-    - get_delta_for_last_x: Gets the delta value for the last x.
-    - sonic_U: Calculates the sonic U value.
-    - singuler_U: Calculates the singular U value.
-    - plot: Plots the U-C space.
-    - get_G: Gets the G array.
-    - get_P: Gets the P array.
-    - get_derivs: Gets the U, G, and P derivative arrays.
-    - get_MM: Gets the MM inverse array.
-    """
 
     def __init__(self, omega, delt=None, gamma=5/3):
         """
@@ -55,8 +18,6 @@ class solution:
         - omega: The value of omega.
         - delt: The value of delt.
         - gamma: The value of gamma.
-        - last_x_approx: The last x approximation.
-        - last_delta_approx: The last delta approximation.
         """
         self.omega = omega
         self.gamma = gamma
@@ -79,56 +40,35 @@ class solution:
         self.MM_inv = None
 
     def find_delta(self):
-        """
-        Finds the value of delta.
-
-        Returns:
-        - The value of delta.
-        """
         if self.omega <= 3:
             self.delt = (self.omega - 3) / 2
         if self.omega > 3 and self.omega <= 3.26:
             self.delt = 0
         if self.omega > 3.26:
+            print("why am I here?")
             delta_infimum, delta_suprimum = self.check_DB(self.omega)
-            func = lambda delt: self.find_delta_helper(delt)
             print("delta_infimum is ", delta_infimum, "delta_suprimum is ", delta_suprimum)
+            func = lambda delt: self.sonic_U(delt) - self.singuler_U(delt)
             if func(delta_infimum) == func(delta_suprimum):
                 self.delt = delta_infimum
             else:
                 if func(delta_infimum) * func(delta_suprimum) > 0:
                     while func(delta_suprimum) < 0:
                         delta_suprimum = 2*delta_suprimum - delta_infimum
-                        print("delta_suprimum is ", delta_suprimum)
                     while func(delta_infimum) > 0:
                         delta_infimum = 2*delta_infimum - delta_suprimum
-                        print("delta_infimum is ", delta_infimum)
 
                 root = scipy.optimize.root_scalar(
                         func, 
                         method = 'brentq',
                         bracket = [delta_infimum,delta_suprimum],
-                        maxiter = 1000
+                        maxiter = 1000,
+                        xtol = 1e-10
                     )
                 self.delt = root.root
 
                 self.save_DB(self.omega, self.delt)
-        self.last_x = self.last_X()
         return self.delt
-
-    def find_delta_helper(self, delt):
-        """
-        Helper function for finding delta.
-
-        Parameters:
-        - delt: The value of delt.
-
-        Returns:
-        - The difference between sonic_U and singuler_U.
-        """
-        sol = solution(self.omega, delt)
-        diff = sol.sonic_U() - sol.singuler_U()
-        return diff
 
 
     def check_DB(self,omega):
@@ -181,26 +121,23 @@ class solution:
         return self.U, self.C
 
     def last_X(self):
-
-        approx, is_there = self.check_last_x_DB()
-        if is_there:
-            return approx
-
-
-        if self.omega < 2:
+        if self.omega <= 2:
             return 1
         
-        solu = solve_PDE(self.omega, self.delt, gamma=self.gamma)
-        x = scipy.optimize.root_scalar(
-                lambda x: self.get_delta_for_last_x(solu, x),
-                method='brentq',
-                bracket=[0, 1],
-                x0=approx,
-                maxiter=100
-            )
-        self.last_x = x.root
-        self.save_last_x_DB(self.last_x)
-        return self.last_x
+        if self.delt is None:
+            self.find_delta()
+        x_space = np.linspace(0, 1, self.precision)
+        num_sol = solve_PDE(self.omega, self.delt, indi=False, x_end = 0).sol(x_space)
+        U = num_sol[0].T
+        C = num_sol[1].T
+        delta = C**2 - (1 - U)**2
+        negetive = np.where(delta <= 0)
+        if len(negetive[0]) == 0:
+            min_index = np.argmin(delta)
+        else:
+            min_index = negetive[0][-1]
+        return x_space[min_index]
+
 
     def save_last_x_DB(self, last_x):
         path = "DB\\last_x.npy"
@@ -242,23 +179,22 @@ class solution:
         delta = C**2 - (1 - U)**2
         return delta
 
-    def sonic_U(self):
-        """
-        Calculates the sonic U value.
-
-        Returns:
-        - The sonic U value.
-        """
+    def sonic_U(self, delt):
         if self.omega <= 2:
-            return 1/self.gamma
-        elif self.omega <= 3.25 and self.omega >= 2:
+            return 1/(self.gamma + 1)
+        if self.omega > 2 and self.omega <= 3.26:
             return 1
+        x_space = np.linspace(0, 1, self.precision)
+        num_sol = solve_PDE(self.omega, delt, indi=False, x_end = 0).sol(x_space)
+        U = num_sol[0].T
+        C = num_sol[1].T
+        delta = C**2 - (1 - U)**2
+        negetive = np.where(delta <= 0)
+        if len(negetive[0]) == 0:
+            min_index = np.argmin(delta)
         else:
-            if self.last_x is None:
-                self.last_x = self.last_X()
-            last = self.last_x
-            U, C = self.get_UC(x_space=np.linspace(1, last, sample_rate))
-            return U[-1]
+            min_index = negetive[0][-1]
+        return U[min_index]
 
     def fast_last_x(self):
         if not self.last_x is None:
@@ -278,19 +214,19 @@ class solution:
         return 1
 
 
-    def singuler_U(self):
+    def singuler_U(self, delt):
         """
         Calculates the singular U value.
 
         Returns:
         - The singular U value.
         """
-        HH = (self.omega - 2*self.delt)/self.gamma
+        HH = (self.omega - 2*delt)/self.gamma
         if self.omega <= 3.26:
             sign = 1
         else:
             sign = -1
-        return (self.delt + 2 + HH + sign * np.sqrt((self.delt + 2 + HH)**2 - 8 * HH)) / 4
+        return (delt + 2 + HH + sign * np.sqrt((delt + 2 + HH)**2 - 8 * HH)) / 4
 
     def plot(self, x_space=np.linspace(1, 0, sample_rate)):
         """
@@ -388,6 +324,7 @@ class solution:
         U, C = self.get_UC()
         G = self.get_G()
         P = self.get_P()
+        print("shape of U is ", U.shape, "shape of C is ", C.shape, "shape of G is ", G.shape, "shape of P is ", P.shape)
         xi = self.xi
         zeros = np.zeros(self.precision)
         M1 = np.array([xi * (U - 1), xi * G, zeros, zeros])
@@ -395,8 +332,8 @@ class solution:
         M3 = np.array([zeros, zeros, (xi ** 2) * G * (U - 1), zeros])
         M4 = np.array([self.gamma * xi * (U - 1)/G, zeros, zeros, xi * (U - 1)/P])
         MM = np.stack((M1, M2, M3, M4))
-        MM = np.rollaxis(MM, 2, 0)[xi_begin:self.precision - 1]
+        MM = np.rollaxis(MM, 2, 0)[:xi_begin]
         MM_inv = np.linalg.inv(MM)
         self.MM = MM
         self.MM_inv = MM_inv
-        return MM_inv
+        return MM
