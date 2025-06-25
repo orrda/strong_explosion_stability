@@ -10,7 +10,7 @@
   },
   {
    "kind": 1,
-   "value": "For values of $q<0$ the system will be stable.\r\n\r\nIn order to solve we need to understand how the matrices look near the sonic point.\r\n\r\nLet $\\xi_0$ denote the $\\xi$ of the sonic point where the \"vacumm\" emerges, let us denote $x = \\xi - \\xi_0$.\r\nNow we can represent the values using this - \r\n\\begin{align*}\r\n    \\left(1-U\\right)&=A\\left(\\xi-\\xi_{0}\\right)^{\\theta}\\\\\r\n    C&=B\\left(\\xi-\\xi_{0}\\right)^{\\phi}\r\n\\end{align*}\r\n",
+   "value": "For values of $q<0$ the system will be stable.\r\n\r\nIn order to solve we need to understand how the matrices look near the sonic point.\r\n\r\nLet $\\xi_0$ denote the $\\xi$ of the sonic point where the \"vacumm\" emerges, let us denote $x = \\xi - \\xi_0$.\r\nNow we can represent the values using this - \r\n\\begin{align*}\r\n    \\left(1-U\\right)&=A\\left(\\xi-\\xi_{0}\\right)^{\\theta}\\\\\r\n    C&=B\\left(\\xi-\\xi_{0}\\right)^{\\phi}\r\n\\end{align*}\r\n\r\n\r\n",
    "languageId": "markdown",
    "outputs": [],
    "metadata": {},
