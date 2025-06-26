@@ -6,7 +6,7 @@ import scipy.optimize
 
 from PDE import *
 
-sample_rate = 100000
+sample_rate = 1000
 
 class solution:
 
@@ -42,10 +42,11 @@ class solution:
     def find_delta(self):
         if self.omega <= 3:
             self.delt = (self.omega - 3) / 2
+        
         if self.omega > 3 and self.omega <= 3.26:
             self.delt = 0
+        
         if self.omega > 3.26:
-            print("why am I here?")
             delta_infimum, delta_suprimum = self.check_DB(self.omega)
             print("delta_infimum is ", delta_infimum, "delta_suprimum is ", delta_suprimum)
             func = lambda delt: self.sonic_U(delt) - self.singuler_U(delt)
@@ -309,8 +310,7 @@ class solution:
 
     def get_MM(self):
         """
-        Gets the MM inverse array.
-
+        computes the MM inverse array.
         Returns:
         - The MM inverse array.
         """

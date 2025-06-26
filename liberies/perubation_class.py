@@ -8,7 +8,7 @@ from scipy.integrate import solve_ivp
 from scipy.optimize import root
 
 
-dist = 10
+dist = 5
 
 
 class perubation:
