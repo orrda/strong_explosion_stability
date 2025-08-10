@@ -6,7 +6,7 @@ import scipy.optimize
 
 from PDE import *
 
-sample_rate = 1000
+sample_rate = 10000
 
 class solution:
 
@@ -36,8 +36,13 @@ class solution:
         self.C_deriv = None
         self.G_deriv = None
         self.P_deriv = None
+
         self.MM = None
         self.MM_inv = None
+        self.W0 = None
+        self.Wq = None
+        self.Wl = None
+
 
     def find_delta(self):
         if self.omega <= 3:
@@ -135,6 +140,7 @@ class solution:
         negetive = np.where(delta <= 0)
         if len(negetive[0]) == 0:
             min_index = np.argmin(delta)
+            print("delta is positive, min index is ", min_index)
         else:
             min_index = negetive[0][-1]
         return x_space[min_index]
@@ -306,7 +312,6 @@ class solution:
         self.C_deriv = np.gradient(C, self.xi)
         self.G_deriv = np.gradient(G, self.xi)
         self.P_deriv = np.gradient(P, self.xi)
-
         return self.U_deriv, self.G_deriv, self.P_deriv
 
     def get_MM(self):
@@ -318,10 +323,8 @@ class solution:
         if self.MM is not None:
             return self.MM
         if self.last_x is None:
-            self.last_x = self.last_X()
-        xi_begin = self.last_x
-        print("xi_begin is ", xi_begin)    
-        xi_begin = int(xi_begin * self.precision)
+            self.last_x = self.last_X()  
+        xi_begin = int(self.precision * (1 - self.last_x))
         U, C = self.get_UC()
         G = self.get_G()
         P = self.get_P()
@@ -333,8 +336,190 @@ class solution:
         M3 = np.array([zeros, zeros, (xi ** 2) * G * (U - 1), zeros])
         M4 = np.array([self.gamma * xi * (U - 1)/G, zeros, zeros, xi * (U - 1)/P])
         MM = np.stack((M1, M2, M3, M4))
-        MM = np.rollaxis(MM, 2, 0)[:xi_begin]
+        MM = np.rollaxis(MM, 2, 0)[:xi_begin+1]
         MM_inv = np.linalg.inv(MM)
         self.MM = MM
         self.MM_inv = MM_inv
         return MM
+    
+
+    def get_W0(self):
+        """
+        Computes the W0 matrix.
+        """
+        
+        if self.W0 is not None:
+            return self.W0
+        
+        if self.last_x is None:
+            self.last_x = self.last_X()
+        xi_begin = int(self.precision * (1 - self.last_x))
+        print("xi_begin is ", xi_begin)
+        
+        xi = self.xi
+        omega = self.omega
+        U, C = self.get_UC()
+        G = self.get_G()
+        P = self.get_P()
+        U_d, G_d, P_d = self.get_derivs()
+        if self.MM is None:
+            self.get_MM()
+
+
+
+        zeros = np.zeros(self.precision)
+        ones = np.ones(self.precision)
+
+        N1 = np.array([omega - 3*U - xi * U_d, 
+                       -xi*G_d - 3 * G, 
+                       zeros, 
+                       zeros])
+        N2 = np.array([P_d/G, 
+                       xi * G * (1 - self.delt - 2*U - xi * U_d), 
+                       zeros, zeros])
+        N3 = np.array([zeros, zeros, 
+                       xi * G * (1 - self.delt - 2*U), 
+                       -1/xi])
+        N4 = np.array([- self.gamma * xi * (U - 1) * G_d/(G ** 2),
+                        xi * self.gamma * G_d/G,
+                        zeros, 
+                        xi * (U - 1) * P_d/(P**2)])
+
+        N0 = np.stack((N1, N2, N3, N4))
+        N0 = np.rollaxis(N0, 2, 0)[:xi_begin+1]
+        N0 = np.matmul(self.MM_inv, N0)
+
+        print("N0 last is - ", N0[-1])
+
+        # now we integrate the N0 matrix along the xi axis
+
+        W0 = np.sum(N0, axis=0)/ (self.precision - xi_begin)
+        self.W0 = W0
+        print("W0 is ", W0)
+        return W0
+
+
+
+    def get_Wq(self):
+        """
+        Computes the Wq matrix.
+        """
+        
+        if self.Wq is not None:
+            return self.Wq
+        
+        if self.last_x is None:
+            self.last_x = self.last_X()
+        xi_begin = int(self.precision * (1 - self.last_x))
+        print("xi_begin is ", xi_begin)
+        
+        xi = self.xi
+        omega = self.omega
+        U, C = self.get_UC()
+        G = self.get_G()
+        P = self.get_P()
+        U_d, G_d, P_d = self.get_derivs()
+
+        if self.MM is None:
+            self.get_MM()
+
+
+        zeros = np.zeros(self.precision)
+        ones = np.ones(self.precision)
+
+        N1 = np.array([-ones, 
+                       zeros, 
+                       zeros, 
+                       zeros])
+        N2 = np.array([zeros, 
+                       - xi * G, 
+                       zeros, zeros])
+        N3 = np.array([zeros, zeros, 
+                       -xi * G, 
+                       zeros])
+        N4 = np.array([self.gamma*ones / G,
+                        zeros, zeros, 
+                        -1/P])
+
+        Nq = np.stack((N1, N2, N3, N4))
+        Nq = np.rollaxis(Nq, 2, 0)[:xi_begin+1]
+        Nq = np.matmul(self.MM_inv, Nq)
+
+        print("Nq last is - ", Nq[-1])
+
+        # now we integrate the N0 matrix along the xi axis
+
+        Wq = np.sum(Nq, axis=0)/ (self.precision - xi_begin)
+        self.Wq = Wq
+        print("Wq is ", Wq)
+        return Wq
+    
+    def get_Wl(self):
+        """
+        Computes the Wl matrix.
+        """
+        
+        if self.Wl is not None:
+            return self.Wl
+        
+        if self.last_x is None:
+            self.last_x = self.last_X()
+        xi_begin = int(self.precision * (1 - self.last_x))
+        print("xi_begin is ", xi_begin)
+        
+        xi = self.xi
+        omega = self.omega
+        U, C = self.get_UC()
+        G = self.get_G()
+        P = self.get_P()
+        U_d, G_d, P_d = self.get_derivs()
+
+        if self.MM is None:
+            self.get_MM()
+
+
+        zeros = np.zeros(self.precision)
+        ones = np.ones(self.precision)
+
+        N1 = np.array([zeros, zeros, G, zeros])
+        N2 = np.array([zeros, zeros, zeros, zeros])
+        N3 = np.array([zeros, zeros, zeros ,zeros])
+        N4 = np.array([zeros, zeros, zeros, zeros])
+
+        Nl = np.stack((N1, N2, N3, N4))
+        Nl = np.rollaxis(Nl, 2, 0)[:xi_begin+1]
+        Nl = np.matmul(self.MM_inv, Nl)
+
+
+
+        print("Nl last is", Nl[-1])
+        # now we integrate the Wl matrix along the xi axis
+
+        Wl = np.sum(Nl, axis=0)
+        print("Wl before normalization is ", Wl)
+        Wl = Wl / (self.precision - xi_begin)
+        self.Wl = Wl
+        print("Wl is ", Wl)
+        return Wl
+
+    def pertubation_BC(self, q):
+        """
+        Computes the pertubation boundary condition.
+        """
+        if self.P_deriv is None or self.U_deriv is None or self.G_deriv is None:
+            self.get_derivs()
+
+        P_d = - self.P_deriv[0]
+        U_d = - self.U_deriv[0]
+        G_d = - self.G_deriv[0]
+
+        Y0 = - self.omega * (self.gamma + 1)/(self.gamma - 1) - G_d
+        Y1 = 2 * q / (self.gamma + 1) - U_d
+        Y2 = - 2 / (self.gamma + 1)
+        Y3 = 2 * ( 2 * (q + 1) - self.omega) - P_d
+
+        Y = np.array([Y0, Y1, Y2, Y3])
+        return Y
+
+
+

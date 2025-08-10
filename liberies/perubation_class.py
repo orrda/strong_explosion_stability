@@ -113,6 +113,36 @@ class perubation:
         MM_inv = np.linalg.inv(MM)
         final_arr = eye_mat - step * np.matmul(MM_inv, NN)
         final_matrix = np.prod(final_arr, axis = 0)
+
+
+        final_matrix = np.eye(4)
+        for i in range(resulotion):
+            MM_inv = np.linalg.inv(MM[i])
+            final_matrix = np.matmul(final_matrix, np.eye(4) - step * np.matmul(MM_inv, NN[i]))
+
+        Y_init = self.get_Y_init(self.q)
+
+        return final_matrix.dot(Y_init)
+
+    def get_sonic_val(self, q):
+        self.q = q
+
+        x_end = self.sol.last_X()
+        interval = 1 - x_end
+
+
+        MM = self.sol.get_MM()
+        MM_inv = self.sol.MM_inv
+        NN = self.get_NN(q)
+
+
+        resulotion = len(NN)
+        step = interval / resulotion
+
+        eye_mat = np.outer(np.ones(resulotion),np.eye(4))
+        eye_mat = np.reshape(eye_mat, (resulotion, 4, 4))
+        final_arr = eye_mat - step * np.matmul(MM_inv, NN)
+        final_matrix = np.prod(final_arr, axis = 0)
         print("final_matrix1 is ", final_matrix)
 
 
@@ -125,6 +155,7 @@ class perubation:
         Y_init = self.get_Y_init(self.q)
 
         return final_matrix.dot(Y_init)
+
 
     def get_NN(self, q):
         sol = self.sol

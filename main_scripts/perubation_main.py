@@ -12,7 +12,14 @@ import scipy.optimize
 
 sol = solution(omega = 4.25, delt = 0.25)
 
-sol.plot()
+per = perubation(sol, L=1)
+q = per.get_q()
+print("q is ", q)
+alpha = 1/(1 - sol.delt)
+print("s is ", q * alpha)
+
+
+
 
 L_array = np.linspace(0.05, 0.6, 50)
 
