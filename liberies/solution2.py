@@ -9,7 +9,7 @@ sample_rate = 1000
 
 class solution:
 
-    def __init__(self, omega, delt=None, gamma=5/3):
+    def __init__(self, omega, delt=None, gamma=5/3, sample_rate=sample_rate):
         """
         Initializes a new instance of the solution class.
 
