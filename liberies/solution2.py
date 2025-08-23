@@ -5,7 +5,7 @@ import scipy.optimize
 
 from PDE import *
 
-sample_rate = 1000
+sample_rate = 2000
 
 class solution:
 

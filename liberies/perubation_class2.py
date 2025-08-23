@@ -355,3 +355,36 @@ class perubation:
         Q = Q * xi_max / len(xi)
 
         return Q
+    
+
+
+    def DMdq_space(self, q, dist):
+        MM = self.get_M(q, dist)
+        QQ = self.get_Q(q, dist)
+
+        Y_init = self.get_Y_init(q)
+        P_vec = np.array([1, 0, 0, 0])
+
+
+        DMdqs = [QQ[0].dot(Y_init)]
+        MM_next = MM[0].dot(Y_init)
+        for i in range(1,len(MM)):
+            DMdq_i = MM[i].dot(DMdqs[-1]) + QQ[i].dot(MM_next)
+            DMdqs.append(DMdq_i)
+            MM_next = MM[i].dot(MM_next)
+        DMdqs = np.array(DMdqs)
+        scalar_arr = P_vec.dot(DMdqs.T)
+
+        return scalar_arr.T
+    
+    def pressure_space(self, q, dist):
+        MM = self.get_M(q, dist)
+        Y_init = self.get_Y_init(q)
+        P_vec = np.array([0, 0, 0, 1])
+    
+        current_MM = Y_init
+        P_space = []
+        for i in range(len(MM)):
+            current_MM = MM[i].dot(current_MM)
+            P_space.append(P_vec.dot(current_MM))
+        return np.array(P_space)
