@@ -1,385 +1,194 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import scipy
-import pandas as pd
-import scipy.optimize
+import jax
+import jax.numpy as jnp  # Added JAX import
+import optimistix as optx
+import equinox as eqx
 
-from PDE import *
+import jax.lax as lax
+from typing import Any # Added import
 
-sample_rate = 100
+from PDE import solve_PDE
 
-class solution:
-    """
-    Represents a solution to a PDE problem.
-
-    Attributes:
-    - omega: The value of omega.
-    - delt: The value of delt.
-    - gamma: The value of gamma.
-    - last_x_approx: The last x approximation.
-    - last_delta_approx: The last delta approximation.
-    - xi: The array of xi values.
-    - precision: The precision value.
-    - last_x: The last x value.
-    - U: The U array.
-    - C: The C array.
-    - G: The G array.
-    - P: The P array.
-    - U_deriv: The U derivative array.
-    - C_deriv: The C derivative array.
-    - G_deriv: The G derivative array.
-    - P_deriv: The P derivative array.
-    - MM: The MM array.
-    - MM_inv: The inverse of MM array.
-
-    Methods:
-    - find_delta: Finds the value of delta.
-    - find_delta_helper: Helper function for finding delta.
-    - get_UC: Gets the U and C arrays.
-    - last_X: Finds the last x value.
-    - get_delta_for_last_x: Gets the delta value for the last x.
-    - sonic_U: Calculates the sonic U value.
-    - singuler_U: Calculates the singular U value.
-    - plot: Plots the U-C space.
-    - get_G: Gets the G array.
-    - get_P: Gets the P array.
-    - get_derivs: Gets the U, G, and P derivative arrays.
-    - get_MM: Gets the MM inverse array.
-    """
+class solution(eqx.Module):
+    omega: float
+    gamma: float
+    delt: float
+    epsilon: float
+    pdeSol: Any
 
     def __init__(self, omega, delt=None, gamma=5/3):
-        """
-        Initializes a new instance of the solution class.
-
-        Parameters:
-        - omega: The value of omega.
-        - delt: The value of delt.
-        - gamma: The value of gamma.
-        - last_x_approx: The last x approximation.
-        - last_delta_approx: The last delta approximation.
-        """
+        
         self.omega = omega
         self.gamma = gamma
-        self.xi = np.linspace(1, 0, sample_rate)
-        self.precision = sample_rate
-        self.last_x = None
-        self.U = None
-        self.C = None
-        self.G = None
-        self.P = None
+        self.epsilon = - self.omega
+
         if delt is None:
-            self.delt = self.find_delta()
+            self.delt = self._find_delta_static(self.omega, self.gamma)
         else:
             self.delt = delt
-            self.last_x = self.last_X()
-        self.U_deriv = None
-        self.C_deriv = None
-        self.G_deriv = None
-        self.P_deriv = None
-        self.MM = None
-        self.MM_inv = None
 
-    def find_delta(self):
-        """
-        Finds the value of delta.
+        self.pdeSol = solve_PDE(self.omega, self.delt, gamma=self.gamma)
+    
+    @staticmethod
+    def _find_delta_static(omega, gamma):
+        def true_branch(args): # omega <= 3
+            om, gam = args
+            return (om - 3) / 2
+            
+        def false_branch_1(args): # omega > 3
+            def true_branch_2_fn(args): # omega <= 3.2554
+                return 0.0
+             
+            def false_branch_2_fn(args): # omega > 3.2554
+                om, gam = args
+                 
+                def fn(delt, _args):
+                    omega, gamma = _args
+                    HH = (omega - 2*delt)/gamma
+                    term_sqrt = jnp.maximum((delt + 2 + HH)**2 - 8 * HH, 0.0)
+                    sing_U = (delt + 2 + HH  - jnp.sqrt(term_sqrt)) / 4
+                    
+                    num_sol = solve_PDE(omega, delt, gamma=gamma, stop_at_sonic=True)
+                    last_U = num_sol.ys[-1, 0]
+                    return sing_U - last_U
 
-        Returns:
-        - The value of delta.
-        """
-        if self.omega <= 3:
-            self.delt = (self.omega - 3) / 2
-        if self.omega > 3 and self.omega <= 3.26:
-            self.delt = 0
-        if self.omega > 3.26:
-            delta_infimum, delta_suprimum = self.check_DB(self.omega)
-            func = lambda delt: self.find_delta_helper(delt)
-            print("delta_infimum is ", delta_infimum, "delta_suprimum is ", delta_suprimum)
-            print("func(inf)", func(delta_infimum), ",func(sup)", func(delta_suprimum))
-            if func(delta_infimum) == func(delta_suprimum):
-                self.delt = delta_infimum
-            else:
-                if func(delta_infimum) * func(delta_suprimum) > 0:
-                    while func(delta_suprimum) < 0:
-                        delta_suprimum = 2*delta_suprimum - delta_infimum
-                        print("delta_suprimum is ", delta_suprimum)
-                    while func(delta_infimum) > 0:
-                        delta_infimum = 2*delta_infimum - delta_suprimum
-                        print("delta_infimum is ", delta_infimum)
+                solver = optx.Bisection(rtol=1e-5, atol=1e-5)
+                point = optx.root_find(fn, solver, y0=0.1, args=(om, gam), throw=False, options=dict(lower=jnp.array(0.0), upper=jnp.array(14.0)))
+                return jnp.array(point.value) # Ensure scalar trace
 
-                root = scipy.optimize.root_scalar(
-                        func, 
-                        method = 'brentq',
-                        bracket = [delta_infimum,delta_suprimum],
-                        maxiter = 1000
-                    )
-                print("for omega =", self.omega, ", delta =", root)
-                self.delt = root.root
+            om, gam = args
+            return lax.cond(om <= 3.2554, true_branch_2_fn, false_branch_2_fn, (om, gam))
 
-                self.save_DB(self.omega, self.delt)
-        self.last_x = self.last_X()
-        return self.delt
+        om, gam = (omega, gamma)
+        # We need to wrap first branch to accept args too
+        def true_branch_wrapper(args):
+            om, gam = args
+            return (om - 3) / 2
+            
+        return lax.cond(om <= 3, true_branch_wrapper, false_branch_1, (om, gam))
 
-    def find_delta_helper(self, delt):
-        """
-        Helper function for finding delta.
-
-        Parameters:
-        - delt: The value of delt.
-
-        Returns:
-        - The difference between sonic_U and singuler_U.
-        """
-        sol = solution(self.omega, delt)
-        diff = sol.sonic_U() - sol.singuler_U()
-        print("for omega =", self.omega, ", delta =", delt, ", diff is - ", diff)
-        return diff
-
-
-    def check_DB(self,omega):
-        path = "DB\\omega_delta.npy"
-        data = np.load(path)
-
-        print("data is ", data)
-        omegas = data[:,0]
-        deltas = data[:,1]
-
-        smaller_omega = omegas[omegas <= omega]
-        bigger_omega = omegas[omegas >= omega]
-
-        if len(smaller_omega) == 0:
-            delta_infimum = 0
-        else:
-            delta_infimum = max(deltas[omegas == max(smaller_omega)])
-
-        if len(bigger_omega) == 0:
-            delta_supremum = delta_infimum + 1
-        else:  
-            delta_supremum = min(deltas[omegas == min(bigger_omega)])
-
-        return delta_infimum, delta_supremum
-
-    def save_DB(self, omega, delta):
-        path = "DB\\omega_delta.npy"
-        data = np.load(path)
-        data = np.append(data, [[omega, delta]], axis=0)
-        np.sort(data, axis=0)
-        np.save(path, data)
-
-
-
-    def get_UC(self, x_space=np.linspace(1, 0, sample_rate)):
-        """
-        Gets the U and C arrays.
-
-        Parameters:
-        - x_space: The x space array.
-
-        Returns:
-        - The U and C arrays.
-        """
-        if self.U is not None and self.C is not None:
-            return self.U, self.C
-        num_sol = solve_PDE(self.omega, self.delt, gamma=self.gamma)
-        UC_num_sol = num_sol.sol(x_space)
-        self.U = UC_num_sol[0].T
-        self.C = UC_num_sol[1].T
-        return self.U, self.C
-
-    def last_X(self):
-
-        approx, is_there = self.check_last_x_DB()
-        if is_there:
-            return approx
-
-
-        if self.omega < 2:
-            return 1
+    @jax.jit
+    def U(self, xi):
+        is_scalar = jnp.ndim(xi) == 0
+        xi_arr = jnp.atleast_1d(xi)
         
-        solu = solve_PDE(self.omega, self.delt, gamma=self.gamma)
-        x = scipy.optimize.root_scalar(
-                lambda x: self.get_delta_for_last_x(solu, x),
-                method='brentq',
-                bracket=[0, 1],
-                x0=approx,
-                maxiter=100
-            )
-        self.last_x = x.root
-        self.save_last_x_DB(self.last_x)
-        return self.last_x
+        def eval_single(t):
+             # evaluate returns [U, C]
+             return self.pdeSol.evaluate(t)[0]
+             
+        res = jax.vmap(eval_single)(xi_arr)
+        
+        return res.reshape(jnp.shape(xi))
 
-    def save_last_x_DB(self, last_x):
-        path = "DB\\last_x.npy"
-        data = np.load(path)
-        last = [self.omega, self.delt,last_x]
-        data = np.append(data, [last], axis=0)
-        np.save(path, data)
+    @jax.jit
+    def C(self, xi):
+        is_scalar = jnp.ndim(xi) == 0
+        xi_arr = jnp.atleast_1d(xi)
+        
+        def eval_single(t):
+             return self.pdeSol.evaluate(t)[1]
+             
+        res = jax.vmap(eval_single)(xi_arr)
+        return res.reshape(jnp.shape(xi))
 
-    def check_last_x_DB(self):
-        path = "DB\\last_x.npy"
-        data = np.load(path)
-        omegas = data[:,0]
-        deltas = data[:,1]
-        last_xs = data[:,2]
-
-        min = 100
-
-        for i in range(len(omegas)):
-            dist = np.sqrt((self.omega - omegas[i])**2 + (self.delt - deltas[i])**2)
-            if dist < min:
-                min = dist
-                approx = last_xs[i]
-        return approx, min == 0
-
-    def get_delta_for_last_x(self, solu, x):
-        """
-        Gets the delta value for the last x.
-
-        Parameters:
-        - solu: The solu object.
-        - x: The x value.
-
-        Returns:
-        - The delta value.
-        """
-        U, C = solu.sol(x)
-        if C <= 0 or U > 1 or U <= 0:
-            return -1
-        delta = C**2 - (1 - U)**2
-        return delta
-
-    def sonic_U(self):
-        """
-        Calculates the sonic U value.
-
-        Returns:
-        - The sonic U value.
-        """
-        if self.omega <= 2:
-            return 1/self.gamma
-        elif self.omega <= 3.25 and self.omega >= 2:
-            return 1
-        else:
-            last = self.last_x
-            U, C = self.get_UC(x_space=np.linspace(1, last, sample_rate))
-            return U[-1]
-
-    def singuler_U(self):
-        """
-        Calculates the singular U value.
-
-        Returns:
-        - The singular U value.
-        """
-        HH = (self.omega - 2*self.delt)/self.gamma
-        if self.omega <= 3.26:
-            sign = 1
-        else:
-            sign = -1
-        return (self.delt + 2 + HH + sign * np.sqrt((self.delt + 2 + HH)**2 - 8 * HH)) / 4
-
-    def plot(self, x_space=np.linspace(1, 0, sample_rate)):
-        """
-        Plots the U-C space.
-
-        Parameters:
-        - x_space: The x space array.
-        """
-        x_space = x_space**2
-        line = np.linspace(1, -1, sample_rate)
-        plt.plot(line, 1 - line, label="sonic line", color="green")
-        plt.plot(line, line - 1, color="green")
-        plt.plot(2/(self.gamma + 1), np.sqrt(2 * self.gamma * (self.gamma - 1)) / (self.gamma + 1), label="shock", marker="*", color="black")
-        UU_1 = np.linspace(0.6001, 1, sample_rate)
-        CC_1 = np.sqrt((self.gamma * (self.gamma - 1) * (1 - UU_1) * (UU_1 ** 2))/(2 * (self.gamma * UU_1 - 1)))
-        plt.plot(UU_1, CC_1, label='first kind', color='black')
-        if self.U is None or self.C is None:
-            U_num, C_num = self.get_UC(x_space)
-        else:
-            U_num = self.U
-            C_num = self.C
-        plt.plot(U_num, C_num, marker='.', label="omega = " + str(self.omega))
-        plt.xlabel("U")
-        plt.ylabel("C")
-        plt.xlim([-0.1, 1])
-        plt.ylim([0, 1])
-        plt.legend()
-        plt.grid()
-        plt.title("U-C Space")
-        plt.show()
-
-    def get_G(self, xi=np.linspace(1, 0, sample_rate)):
-        """
-        Gets the G array.
-
-        Parameters:
-        - xi: The xi array.
-
-        Returns:
-        - The G array.
-        """
-        if self.G is not None:
-            return self.G
-        lambd = (2*self.delt + self.omega * (self.gamma - 1))/(3 - self.omega)
+    @jax.jit
+    def G(self, xi):
+        lambd = (2 * self.delt + self.omega * (self.gamma - 1)) / (3 - self.omega)
+        
         const = (((1 - 2/(self.gamma + 1)) ** lambd) * (((self.gamma + 1)/(self.gamma - 1)) ** (self.gamma + 1 + lambd)) )/(2 * self.gamma * (self.gamma - 1))
-        U, C = self.get_UC(xi)
-        G = (const * (C ** 2) * (xi ** (2 - 3 * lambd)) * ((1 - U) ** (-lambd))) ** (1/(self.gamma - 1 + lambd))
-        self.G = G
-        return G 
+        
+        G = (const * (self.C(xi) ** 2) * (xi ** (2 - 3 * lambd)) * ((1 - self.U(xi)) ** (-lambd))) ** (1/(self.gamma - 1 + lambd))
+        return G
 
-    def get_P(self):
-        """
-        Gets the P array.
+    @jax.jit
+    def P(self, xi):
+        # Calculate P on the fly for a given xi
+        C_val = self.C(xi)
+        G_val = self.G(xi)
+        
+        P = (xi ** 2) * G_val * (C_val ** 2) / self.gamma
+        return P
+    
+    @jax.jit
+    def dUdx(self, xi):
+        U = self.U(xi)
+        C = self.C(xi) 
 
-        Returns:
-        - The P array.
-        """
-        if self.P is not None:
-            return self.P
-        self.P = (self.xi ** 2) * self.G * (self.C ** 2)/self.gamma
-        return self.P
+        delta0 = C ** 2 - (1 - U) ** 2
+        delta1 = U * (1 - U) * (1 - U - self.delt) - (C ** 2) * (3 * U + (-self.omega + 2 * self.delt) / self.gamma)
 
-    def get_derivs(self):
-        """
-        Gets the U, G, and P derivative arrays.
+        return delta1/(delta0 * xi)
+    @jax.jit
+    def dCdx(self, xi):
+        U = self.U(xi)
+        C = self.C(xi)
 
-        Returns:
-        - The U, G, and P derivative arrays.
-        """
-        if self.U_deriv is not None and self.C_deriv is not None and self.G_deriv is not None and self.P_deriv is not None:
-            return self.U_deriv, self.G_deriv, self.P_deriv
-        U, C = self.get_UC()
-        G = self.get_G()
-        P = self.get_P()
-        self.U_deriv = np.gradient(U, self.xi)
-        self.C_deriv = np.gradient(C, self.xi)
-        self.G_deriv = np.gradient(G, self.xi)
-        self.P_deriv = np.gradient(P, self.xi)
-        return self.U_deriv, self.G_deriv, self.P_deriv
+        delta0 = C ** 2 - (1 - U) ** 2
+        delta2 = C * (1 - U) * (1 - U - self.delt) - (self.gamma - 1) * C * U * (2 - 2 * U + self.delt) / 2 - (C ** 3) + (2 * self.delt + (self.gamma - 1) * self.omega) * (C ** 3)/(2 * self.gamma * (1 - U))
+        return delta2/(delta0 * xi)
 
-    def get_MM(self):
-        """
-        Gets the MM inverse array.
+    @jax.jit
+    def dGdx(self, xi):
+        lambd = (2 * self.delt + self.omega * (self.gamma - 1)) / (3 - self.omega)
 
-        Returns:
-        - The MM inverse array.
-        """
-        if self.MM is not None:
-            return self.MM
-        xi_begin = self.last_x
-        print("xi_begin is ", xi_begin)    
-        xi_begin = int(xi_begin * self.precision)
-        U, C = self.get_UC()
-        G = self.get_G()
-        P = self.get_P()
-        xi = self.xi
-        zeros = np.zeros(self.precision)
-        M1 = np.array([xi * (U - 1), xi * G, zeros, zeros])
-        M2 = np.array([zeros, (xi ** 2) * G * (U - 1), zeros, np.ones(self.precision)])
-        M3 = np.array([zeros, zeros, (xi ** 2) * G * (U - 1), zeros])
-        M4 = np.array([self.gamma * xi * (U - 1)/G, zeros, zeros, xi * (U - 1)/P])
-        MM = np.stack((M1, M2, M3, M4))
-        MM = np.rollaxis(MM, 2, 0)[xi_begin:self.precision - 1]
-        MM_inv = np.linalg.inv(MM)
-        self.MM = MM
-        self.MM_inv = MM_inv
-        return MM_inv
+        C = self.C(xi)
+        U = self.U(xi)
+        G = self.G(xi)
+
+        C_term = 2 *self.dCdx(xi)/C
+        U_term = lambd * self.dUdx(xi)/(1 - U)
+        xi_term = (2 - 3 * lambd)/xi
+
+        sum_terms = C_term + U_term + xi_term
+
+        return sum_terms * G / (self.gamma - 1 + lambd)
+
+    @jax.jit
+    def dPdx(self, xi):
+        G = self.G(xi)
+        C = self.C(xi)
+        P = self.P(xi)
+
+        C_term = 2 *self.dCdx(xi)/C
+        G_term = self.dGdx(xi)/G
+        xi_term = 2/xi
+
+        return (C_term + G_term + xi_term) * P
+    
+
+
+if __name__ == "__main__":
+    gamma = 5/3
+    omegas = [3, 3.05, 3.1, 3.15, 3.2, 3.25]
+
+    xi_plot = jnp.linspace(1, 0, 1000)
+
+    plt.figure()
+
+    for omega in omegas:
+        sol = solution(omega, gamma=gamma)
+
+        U_val = sol.U(xi_plot)
+        C_val = sol.C(xi_plot)
+        plt.plot(U_val, C_val)
+
+    plt.plot(xi_plot, 1 - xi_plot)
+    plt.xlabel('U')
+    plt.ylabel('C')
+    plt.xlim(0.6, 1.0)
+    plt.ylim(0.0, 0.6)
+    plt.grid()
+
+    # Create the directory if it doesn't exist
+    import os
+    if not os.path.exists('plots'):
+        os.makedirs('plots')
+    plot_path = f'plots/solution_U_vs_C_omega_{omega}.png'
+    #plt.savefig(plot_path)
+    plt.show()
+    print(f"Plot saved to {plot_path}")
+    print("Final delta:", sol.delt)
+
+
+

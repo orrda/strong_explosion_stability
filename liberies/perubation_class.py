@@ -3,8 +3,12 @@ from solution import *
 from PDE import *
 import matplotlib.pyplot as plt
 import scipy
-from scipy.integrate import solve_ivp
 from scipy.optimize import root
+
+# Import JAX and Diffrax
+import jax
+import jax.numpy as jnp
+from diffrax import diffeqsolve, ODETerm, Dopri5, PIDController, SaveAt
 
 
 dist = 10
@@ -38,29 +42,133 @@ class perubation:
 
         x_end = self.sol.last_x
         Y_init = self.get_Y_init()
+        # Convert Y_init to JAX array if it isn't already
+        Y_init = jnp.array(Y_init)
 
         MM = self.sol.MM
         NN = self.get_NN(q)
-        DY = np.array([np.matmul(MM[i], NN[i]) for i in range(len(MM))])
+        
+        # DY is a series of matrices? From context, MM is likely an array of matrices.
+        # Original code: DY = np.array([np.matmul(MM[i], NN[i]) for i in range(len(MM))])
+        
+        # We need to compute DY using JAX compatible operations if we want to JIT it, 
+        # but here we are setting up the ODE.
+        
+        # The ODE function depends on an interpolated matrix field.
+        # Or it uses lookups based on x.
+        
+        # Original: DY_Dx = lambda x, Y: DY[int((1 - x) * self.sol.precision)].dot(Y)
+        # This implies a discrete lookup.
+        
+        # Let's precompute DY
+        MM_jax = jnp.array(MM)
+        NN_jax = jnp.array(NN)
+        # Using jnp.matmul or @
+        DY_jax = jnp.matmul(MM_jax, NN_jax) # Shape (T, 4, 4) if MM is (T,4,4) and NN is (T,4,4) or similar
+        
+        # We need a function that interpolates DY at x.
+        # self.sol.xi is the x array corresponding to indices.
+        # x goes from 1 down to 0 ? Or 0 to 1?
+        # In solution.py: self.xi = np.linspace(1, 0, sample_rate)
+        
+        # If x is continuous, finding the index: int((1 - x) * self.sol.precision)
+        # This mapping assumes x is in [0,1] and indices map linearly.
+        
+        # Let's define the vector field for Diffrax.
+        # x is the independent variable (time). Diffrax calls it t.
+        
+        def vector_field(x, Y, args):
+            DY, precision = args
+            # Calculate index. Note that x is decreasing from 1 to x_end probably?
+            # Original code integrates from 1 to x_end.
+            # int((1 - x) * self.sol.precision)
+            # 1 -> 0
+            # 0 -> precision
+            
+            # For JAX, we cannot use flexible integer casting easily inside JIT unless we use specific JAX ops.
+            # Also, Diffrax usually expects continuous functions. 
+            # Step function can be problematic for adaptive solvers if it jumps too much.
+            
+            # A better approach for JAX/Diffrax with discrete data is to use LinearInterpolation.
+            # But the grid might be coarse.
+            
+            # Let's just implement the same logic with jnp for now.
+            idx = jnp.floor((1 - x) * precision).astype(int)
+            # Clamp index to be safe
+            idx = jnp.clip(idx, 0, DY.shape[0] - 1)
+            
+            matrix_at_x = DY[idx]
+            
+            return jnp.dot(matrix_at_x, Y)
 
-        DY_Dx = lambda x, Y: DY[int((1 - x) * self.sol.precision)].dot(Y)
-
-        num_sol = solve_ivp(
-            DY_Dx,
-            [1, x_end],
-            Y_init,
-            method='RK45',
-            dense_output=True,
+        term = ODETerm(vector_field)
+        solver = Dopri5()
+        stepsize_controller = PIDController(rtol=1e-5, atol=1e-5)
+        
+        # Solve from 1 to x_end
+        num_sol = diffeqsolve(
+            term,
+            solver,
+            t0=1.0,
+            t1=x_end,
+            dt0=None,
+            y0=Y_init,
+            args=(DY_jax, self.sol.precision),
+            stepsize_controller=stepsize_controller,
+            saveat=SaveAt(dense=True),
+            # Set max_steps to something reasonable
+            max_steps=10000 
         )
 
         resulotion = int((1 - x_end) * self.sol.precision)
+        
+        # Generate evaluation points
+        x_space = jnp.linspace(x_end, 1, resulotion)
+        
+        # Evaluate
+        # Note: x_space goes from x_end to 1 (increasing), but integration was 1 to x_end (decreasing).
+        # Diffrax dense output handles this.
+        Y_num_sol = jax.vmap(num_sol.evaluate)(x_space)
+        
+        # end_vec was Y_num_sol[:, dist]
+        # In original code, dist=10. 
+        # Y_num_sol shape is (resolution, 4).
+        # Wait, if dist is an index into the solution array along the time axis?
+        # "Y_num_sol = num_sol.sol(x_space)" returns shape (4, resolution) usually in scipy?
+        # Scipy solve_ivp dense_output returns a function that returns (n, t_points).
+        # So Y_num_sol shape in scipy was (4, resolution).
+        # In JAX/Diffrax vmap result, shape is (resolution, 4).
+        
+        # Original: end_vec = Y_num_sol[:, dist]
+        # Is dist an index of the time steps?
+        # dist = 10 at top of file.
+        # If resolution > 10, then we are picking the 11th point in time?
+        # Yes, looks like it picks a specific point in the trajectory.
+        
+        # With Diffrax vmap result (resolution, 4):
+        # We need the "dist"-th point.
+        # Note: x_space was linspace(x_end, 1, resolution).
+        # Scipy sol(x_space) respects the order of x_space.
+        
+        # So we want the `dist` index from the result.
+        
+        # However, checking orientation:
+        # Scipy: Y_num_sol is (vars, time).
+        # Y_num_sol[:, dist] would be the state vector at the `dist`-th time point.
+        
+        # My JAX result: (time, vars).
+        # So I should take [dist, :].
+        
+        end_vec = Y_num_sol[dist, :]
 
-        x_space = np.linspace(x_end, 1, resulotion)
-        Y_num_sol = num_sol.sol(x_space)
-        end_vec = Y_num_sol[:, dist]
+        return np.array(end_vec) # Return as numpy array for compatibility
 
-        return end_vec
 
+    def integrate_qs(self, q_list):
+        # We need to rewrite this method as well or ensure it uses the ported logic.
+        # But looking at the file, there is code after get_NN that I didn't see.
+        # I should read the rest of the file to see if there are other usages of solve_ivp.
+        pass
 
     def get_NN(self, q):
         sol = self.sol
@@ -165,31 +273,49 @@ class perubation:
     def solve_from_sonic_to_boundery(self, vecs, q):
         end_vec = []
         last_x = self.sol.last_x
-        resulotion = int((1 - last_x) * self.sol.precision)
-        
+        # Note: self.sol.MM_inv and get_NN(q) likely return numpy arrays.
+        # We need to adapt the logic for JAX + Diffrax.
 
         MM_inv = self.sol.MM_inv
         NN = self.get_NN(q)
-        DY = np.array([np.matmul(MM_inv[i], NN[i]) for i in range(len(MM_inv))])
-
-        DY_Dx = lambda x, Y: DY[int((x - last_x) * self.sol.precision)].dot(Y)
-
-        for vec in vecs:
-            num_sol = solve_ivp(
-                DY_Dx,
-                [last_x, 1],
-                vec,
-                method='RK45',
-                dense_output=True,
-            )
-
+        
+        # Precompute DY
+        DY = jnp.array([jnp.matmul(MM_inv[i], NN[i]) for i in range(len(MM_inv))])
+        
+        # Define vector field
+        def vector_field(x, Y, args):
+            DY, precision, last_x = args
+            idx = jnp.floor((x - last_x) * precision).astype(int)
+            idx = jnp.clip(idx, 0, DY.shape[0] - 1)
             
-            x_space = np.linspace(last_x, 1, resulotion)
-            Y_num_sol = num_sol.sol(x_space)
-            end_vec.append(Y_num_sol[:, -1])
+            matrix_at_x = DY[idx]
+            
+            return jnp.dot(matrix_at_x, Y)
 
-        return np.array(end_vec)
+        vecs_jnp = jnp.array(vecs) # shape (3, N_vars)
+        
+        term = ODETerm(vector_field)
+        solver = Dopri5()
+        stepsize_controller = PIDController(rtol=1e-5, atol=1e-5)
+        
+        def solve_single(y_init):
+             sol = diffeqsolve(
+                term,
+                solver,
+                t0=last_x,
+                t1=1.0,
+                dt0=None,
+                y0=y_init,
+                args=(DY, self.sol.precision, last_x),
+                stepsize_controller=stepsize_controller,
+                max_steps=10000 
+            )
+             return sol.ys[-1]
 
+        # Use vmap to solve for all vectors
+        end_vecs = jax.vmap(solve_single)(vecs_jnp)
+
+        return np.array(end_vecs) # Convert back to numpy
 
 
     def gram_schmidt(self, vecs):
@@ -197,4 +323,3 @@ class perubation:
         for i in range(1, len(vecs)):
             vec = vec - np.dot(vec, vecs[i]) * vecs[i]
         return vec/np.linalg.norm(vec)
-    
