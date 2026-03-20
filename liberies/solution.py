@@ -16,6 +16,7 @@ class solution(eqx.Module):
     delt: float
     epsilon: float
     pdeSol: Any
+    xi_final: float
 
     def __init__(self, omega, delt=None, gamma=5/3):
         
@@ -28,7 +29,8 @@ class solution(eqx.Module):
         else:
             self.delt = delt
 
-        self.pdeSol = solve_PDE(self.omega, self.delt, gamma=self.gamma)
+        self.pdeSol = solve_PDE(self.omega, self.delt, gamma=self.gamma, stop_at_sonic=True)
+        self.xi_final = self.pdeSol.ts[-1]
     
     @staticmethod
     def _find_delta_static(omega, gamma):
@@ -160,7 +162,7 @@ class solution(eqx.Module):
 
 if __name__ == "__main__":
     gamma = 5/3
-    omegas = [3, 3.05, 3.1, 3.15, 3.2, 3.25]
+    omegas = [0.5, 1.0, 3.25, 3.2554, 4, 4.25, 5]
 
     xi_plot = jnp.linspace(1, 0, 1000)
 
@@ -169,15 +171,18 @@ if __name__ == "__main__":
     for omega in omegas:
         sol = solution(omega, gamma=gamma)
 
+        print(sol.xi_final)
+
         U_val = sol.U(xi_plot)
         C_val = sol.C(xi_plot)
-        plt.plot(U_val, C_val)
+        plt.plot(U_val, C_val, '.')
 
-    plt.plot(xi_plot, 1 - xi_plot)
+    line = jnp.linspace(0, 1, 100)
+    plt.plot(line, 1-line, 'r--')
     plt.xlabel('U')
     plt.ylabel('C')
-    plt.xlim(0.6, 1.0)
-    plt.ylim(0.0, 0.6)
+    #plt.xlim(0.6, 1.0)
+    #plt.ylim(0.0, 0.6)
     plt.grid()
 
     # Create the directory if it doesn't exist
