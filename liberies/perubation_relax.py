@@ -84,13 +84,15 @@ class Perturbation(eqx.Module):
 
         xi_arr = self.sol.xi(grid_t)
         dxi = jnp.diff(xi_arr)
-        A_arr = self.A(grid_t[:-1])
+        
+        # Use jax.vmap to evaluate A over the array of times
+        A_arr = jax.vmap(lambda t: self.A(t))(grid_t[:-1])
 
         I_arr = jnp.tile(jnp.eye(4), (A_arr.shape[0], 1, 1))
 
-        dYdt = I_arr + A_arr * dxi
+        dYdt = I_arr + A_arr * dxi[:, None, None]
 
-        Y_1 = jax.lax.scan(lambda Y, dY: (Y + dY, None), self.Y_0(), dYdt)
+        Y_1, _ = jax.lax.scan(lambda Y, dY: (dY @ Y, None), self.Y_0(), dYdt)
 
         return Y_1 - self.Y_end(grid_t[-1])
 
@@ -117,7 +119,7 @@ if __name__ == "__main__":
     sol = solution(omega=omega, gamma=gamma, delt=delt)
 
     alpha = 1/(1-sol.delt)
-    l = 2
+    l = 1
     s_real = jnp.linspace(-2, 2, 100)
     s_img = jnp.linspace(-2, 2, 100)
     s_arr = s_real[:, None] + 1j * s_img
@@ -125,7 +127,7 @@ if __name__ == "__main__":
 
     # Use a double vmap since q_arr is a 2D array and we want 'q' to be a scalar in each evaluation
     res = jax.vmap(jax.vmap(lambda q: resi_q(l, q, 100)))(q_arr)
-    res = jnp.log(jnp.linalg.norm(res) + 1e-12)  # Adding a small constant to avoid log(0)
+    res = jnp.log(jnp.linalg.norm(res, axis=-1) + 1e-12)  # Adding a small constant to avoid log(0)
 
     # To plot the magnitude, we can take the norm of the residual vector
     plt.imshow(res, extent=[s_img.min(), s_img.max(), s_real.min(), s_real.max()], aspect='auto', origin='lower')

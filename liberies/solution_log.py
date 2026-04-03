@@ -184,9 +184,9 @@ class solution(eqx.Module):
         NN20 = 0
         NN21 = 0
         NN22 = (1 - self.delt - 2 * U) * G * xi
-        NN23 = 1/xi
+        NN23 = -1/xi
 
-        NN30 = self.gamma * (U - 1) * xi * dGdxi/G
+        NN30 = - self.gamma * (U - 1) * xi * dGdxi/(G**2)
         NN31 = self.gamma * xi * dGdxi/G
         NN32 = 0
         NN33 = xi * (U - 1) * dPdxi/(P ** 2)
