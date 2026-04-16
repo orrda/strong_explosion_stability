@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from PDEe import *
+from liberies.PDE import *
 
 def find_delta(omega, gamma):
     if omega <= 3:

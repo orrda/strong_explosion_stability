@@ -1,199 +1,329 @@
+from PDE import *
 import numpy as np
 import matplotlib.pyplot as plt
-import jax
-import jax.numpy as jnp  # Added JAX import
-import optimistix as optx
-import equinox as eqx
 
-import jax.lax as lax
-from typing import Any # Added import
+from delta_finder import find_delta
 
-from PDE import solve_PDE
 
-class solution(eqx.Module):
-    omega: float
-    gamma: float
-    delt: float
-    epsilon: float
-    pdeSol: Any
-    xi_final: float
 
-    def __init__(self, omega, delt=None, gamma=5/3):
-        
-        self.omega = omega
-        self.gamma = gamma
-        self.epsilon = - self.omega
+def G_val(U, C, xi, args):
+    omega, delt, gamma = args
+    lambd = (2 * delt + omega * (gamma - 1)) / (3 - omega)
 
-        if delt is None:
-            self.delt = self._find_delta_static(self.omega, self.gamma)
-        else:
-            self.delt = delt
+    const = (((1 - 2/(gamma + 1)) ** lambd) * (((gamma + 1)/(gamma - 1)) ** (gamma + 1 + lambd)) )/(2 * gamma / (gamma - 1))
+    G = (const * (C ** 2) * (xi ** (2 - 3 * lambd)) * ((1 - U) ** (-lambd))) ** (1/(gamma - 1 + lambd))
+    return G
 
-        self.pdeSol = solve_PDE(self.omega, self.delt, gamma=self.gamma, stop_at_sonic=True)
-        self.xi_final = self.pdeSol.ts[-1]
+
+def P_val(U, C, xi, args):
+    G = G_val(U, C, xi, args)
+
+    P = (xi ** 2) * G * (C ** 2) / args[2]
+    return P
+
+
+
+def dUdxi_val(U, C, xi, args):
+    omega, delt, gamma = args
+    delta0 = C ** 2 - (1 - U) ** 2
+    delta1 = U * (1 - U) * (1 - U - delt) - (C ** 2) * (3 * U + (-omega + 2 * delt) / gamma)
+
+    return delta1/(delta0 * xi)
+
+
+def dCdxi_val(U, C, xi, args):
+    omega, delt, gamma = args
+    delta0 = C ** 2 - (1 - U) ** 2
+    delta1 = C * (1 - U) * (1 - U - delt) - (gamma - 1) * C * U * (2 - 2 * U + delt) / 2 - (C ** 3) + (2 * delt + (gamma - 1) * omega) * (C ** 3)/(2 * gamma * (1 - U))
+
+    return delta1/(delta0 * xi)
+
+
+def dGdxi_val(U, C, xi, args):
+    omega, delt, gamma = args
+    lambd = (2 * delt + omega * (gamma - 1)) / (3 - omega)
+    G = G_val(U, C, xi, args)
+
+    C_term = 2 * dCdxi_val(U, C, xi, args) / C
+    U_term = lambd * dUdxi_val(U, C, xi, args) / (1 - U)
+    xi_term = (2 - 3 * lambd) / xi
+
+    sum_terms = C_term + U_term + xi_term
+    return sum_terms * G / (gamma - 1 + lambd)
+
+
+def dPdxi_val(U, C, xi, args):
+    G = G_val(U, C, xi, args)
+    P = P_val(U, C, xi, args)
+
+    C_term = 2 * dCdxi_val(U, C, xi, args) / C
+    G_term = dGdxi_val(U, C, xi, args) / G
+    xi_term = 2 / xi
+
+    return (C_term + G_term + xi_term) * P
+
+
+
+def NNr(U, C, xi, args):
+    omega, delt, gamma = args
+    G = G_val(U, C, xi, args)
+    P = P_val(U, C, xi, args)
+
+    dUdxi = dUdxi_val(U, C, xi, args)
+    dGdxi = dGdxi_val(U, C, xi, args)
+    dPdxi = dPdxi_val(U, C, xi, args)
+
+    zero_arr = np.zeros_like(xi)
+
+    NN00 = omega - 3 * U - xi * dUdxi
+    NN01 = - xi * dGdxi - 3 * G
+    NN02 = zero_arr
+    NN03 = zero_arr
+
+    NN10 = dPdxi/G
+    NN11 = (1 - delt - 2 * U - xi * dUdxi) * G * xi
+    NN12 = zero_arr
+    NN13 = zero_arr
+
+    NN20 = zero_arr
+    NN21 = zero_arr
+    NN22 = (1 - delt - 2 * U) * G * xi
+    NN23 = -1/xi
+
+    NN30 = - gamma * (U - 1) * xi * dGdxi/(G**2)
+    NN31 = gamma * xi * dGdxi/G
+    NN32 = zero_arr
+    NN33 = xi * (U - 1) * dPdxi/(P ** 2)
+
+    return np.array([[NN00, NN01, NN02, NN03],
+                        [NN10, NN11, NN12, NN13],
+                        [NN20, NN21, NN22, NN23],
+                        [NN30, NN31, NN32, NN33]])
+
+
+def MMr(U, C, xi, args):
+    omega, delt, gamma = args
+
+    G = G_val(U, C, xi, args)
+    P = P_val(U, C, xi, args)
+
+    zero_arr = np.zeros_like(xi)
+
+    MM00 = xi * (U - 1)
+    MM01 = G * xi
+    MM02 = zero_arr
+    MM03 = zero_arr
+
+    MM10 = zero_arr
+    MM11 = (U - 1) * G * xi**2
+    MM12 = zero_arr
+    MM13 = np.ones_like(xi)
+
+    MM20 = zero_arr
+    MM21 = zero_arr
+    MM22 = (U - 1) * G * xi**2
+    MM23 = zero_arr
+
+    MM30 = - gamma * (U - 1) * xi / G
+    MM31 = zero_arr
+    MM32 = zero_arr
+    MM33 = xi * (U - 1) / P
+
+    return np.array([[MM00, MM01, MM02, MM03],
+                        [MM10, MM11, MM12, MM13],
+                        [MM20, MM21, MM22, MM23],
+                        [MM30, MM31, MM32, MM33]])
+
+
+def NNq(U, C, xi, args):
+    omega, delt, gamma = args
+    G = G_val(U, C, xi, args)
+    P = P_val(U, C, xi, args)
+    zero_arr = np.zeros_like(xi)
+
+    return np.array([[-np.ones_like(xi), zero_arr, zero_arr, zero_arr],
+                    [zero_arr, - G * xi, zero_arr, zero_arr],
+                    [zero_arr, zero_arr, - G * xi, zero_arr],
+                    [gamma / G, zero_arr, zero_arr, - 1 / P]])
+
+def NNl(U, C, xi, args):
+    omega, delt, gamma = args
+    G = G_val(U, C, xi, args)
+
+    zero_arr = np.zeros_like(xi)
+
+    return np.array([[zero_arr, zero_arr, G, zero_arr],
+                    [zero_arr, zero_arr, zero_arr, zero_arr],
+                    [zero_arr, zero_arr, zero_arr, zero_arr],
+                    [zero_arr, zero_arr, zero_arr, zero_arr]])
     
-    @staticmethod
-    def _find_delta_static(omega, gamma):
-        def true_branch(args): # omega <= 3
-            om, gam = args
-            return (om - 3) / 2
-            
-        def false_branch_1(args): # omega > 3
-            def true_branch_2_fn(args): # omega <= 3.2554
-                return 0.0
-             
-            def false_branch_2_fn(args): # omega > 3.2554
-                om, gam = args
-                 
-                def fn(delt, _args):
-                    omega, gamma = _args
-                    HH = (omega - 2*delt)/gamma
-                    term_sqrt = jnp.maximum((delt + 2 + HH)**2 - 8 * HH, 0.0)
-                    sing_U = (delt + 2 + HH  - jnp.sqrt(term_sqrt)) / 4
-                    
-                    num_sol = solve_PDE(omega, delt, gamma=gamma, stop_at_sonic=True)
-                    last_U = num_sol.ys[-1, 0]
-                    return sing_U - last_U
 
-                solver = optx.Bisection(rtol=1e-5, atol=1e-5)
-                point = optx.root_find(fn, solver, y0=0.1, args=(om, gam), throw=False, options=dict(lower=jnp.array(0.0), upper=jnp.array(14.0)))
-                return jnp.array(point.value) # Ensure scalar trace
+def Y_init(l, q, args):
+    omega, delt, gamma = args
+    U_init, C_init, xi_init = Y0(gamma)
 
-            om, gam = args
-            return lax.cond(om <= 3.2554, true_branch_2_fn, false_branch_2_fn, (om, gam))
+    dGdxi = dGdxi_val(U_init, C_init, xi_init, args)
+    dUdxi = dUdxi_val(U_init, C_init, xi_init, args)
+    dPdxi = dPdxi_val(U_init, C_init, xi_init, args)
 
-        om, gam = (omega, gamma)
-        # We need to wrap first branch to accept args too
-        def true_branch_wrapper(args):
-            om, gam = args
-            return (om - 3) / 2
-            
-        return lax.cond(om <= 3, true_branch_wrapper, false_branch_1, (om, gam))
+    dG_boundery = - omega * (gamma + 1)/(gamma - 1) - dGdxi
+    dUr_boundery = 2 * q / (gamma + 1) - dUdxi
+    dUt_boundery = -2 / (gamma + 1)
+    dP_boundery = 2 * (2 * (q + 1) - omega) / (gamma + 1) - dPdxi
 
-    @jax.jit
-    def U(self, xi):
-        is_scalar = jnp.ndim(xi) == 0
-        xi_arr = jnp.atleast_1d(xi)
-        
-        def eval_single(t):
-             # evaluate returns [U, C]
-             return self.pdeSol.evaluate(t)[0]
-             
-        res = jax.vmap(eval_single)(xi_arr)
-        
-        return res.reshape(jnp.shape(xi))
+    return np.array([dG_boundery, dUr_boundery, dUt_boundery, dP_boundery])
 
-    @jax.jit
-    def C(self, xi):
-        is_scalar = jnp.ndim(xi) == 0
-        xi_arr = jnp.atleast_1d(xi)
-        
-        def eval_single(t):
-             return self.pdeSol.evaluate(t)[1]
-             
-        res = jax.vmap(eval_single)(xi_arr)
-        return res.reshape(jnp.shape(xi))
 
-    @jax.jit
-    def G(self, xi):
-        lambd = (2 * self.delt + self.omega * (self.gamma - 1)) / (3 - self.omega)
-        
-        const = (((1 - 2/(self.gamma + 1)) ** lambd) * (((self.gamma + 1)/(self.gamma - 1)) ** (self.gamma + 1 + lambd)) )/(2 * self.gamma * (self.gamma - 1))
-        
-        G = (const * (self.C(xi) ** 2) * (xi ** (2 - 3 * lambd)) * ((1 - self.U(xi)) ** (-lambd))) ** (1/(self.gamma - 1 + lambd))
-        return G
 
-    @jax.jit
-    def P(self, xi):
-        # Calculate P on the fly for a given xi
-        C_val = self.C(xi)
-        G_val = self.G(xi)
-        
-        P = (xi ** 2) * G_val * (C_val ** 2) / self.gamma
-        return P
-    
-    @jax.jit
-    def dUdx(self, xi):
-        U = self.U(xi)
-        C = self.C(xi) 
+def Y_end(Y, U, C, xi, args, q, l):
+    omega, delt, gamma = args
 
-        delta0 = C ** 2 - (1 - U) ** 2
-        delta1 = U * (1 - U) * (1 - U - self.delt) - (C ** 2) * (3 * U + (-self.omega + 2 * self.delt) / self.gamma)
 
-        return delta1/(delta0 * xi)
-    @jax.jit
-    def dCdx(self, xi):
-        U = self.U(xi)
-        C = self.C(xi)
+    G = G_val(U, C, xi, args)
+    P = P_val(U, C, xi, args)
 
-        delta0 = C ** 2 - (1 - U) ** 2
-        delta2 = C * (1 - U) * (1 - U - self.delt) - (self.gamma - 1) * C * U * (2 - 2 * U + self.delt) / 2 - (C ** 3) + (2 * self.delt + (self.gamma - 1) * self.omega) * (C ** 3)/(2 * self.gamma * (1 - U))
-        return delta2/(delta0 * xi)
+    NN = NNr(U, C, xi, args) + (q * NNq(U, C, xi, args)) + (l * (l + 1) * NNl(U, C, xi, args))
+    vec = NN @ Y
 
-    @jax.jit
-    def dGdx(self, xi):
-        lambd = (2 * self.delt + self.omega * (self.gamma - 1)) / (3 - self.omega)
+    v1 = vec[0]
+    v2 = vec[1]
+    v4 = vec[3]
 
-        C = self.C(xi)
-        U = self.U(xi)
-        G = self.G(xi)
+    first = - gamma * P * v1
+    second = xi * (U - 1) * G * v2
+    third = - P * v4
 
-        C_term = 2 *self.dCdx(xi)/C
-        U_term = lambd * self.dUdx(xi)/(1 - U)
-        xi_term = (2 - 3 * lambd)/xi
+    return first + second + third
 
-        sum_terms = C_term + U_term + xi_term
 
-        return sum_terms * G / (self.gamma - 1 + lambd)
 
-    @jax.jit
-    def dPdx(self, xi):
-        G = self.G(xi)
-        C = self.C(xi)
-        P = self.P(xi)
+def last_per(U, C, xi, args, q, l):
 
-        C_term = 2 *self.dCdx(xi)/C
-        G_term = self.dGdx(xi)/G
-        xi_term = 2/xi
+    NN = NNr(U, C, xi, args) + q * NNq(U, C, xi, args) + l * (l + 1) * NNl(U, C, xi, args)
+    MM = MMr(U, C, xi, args)
 
-        return (C_term + G_term + xi_term) * P
-    
+    Y = Y_init(l, q, args)
+
+    for i in range(len(xi)-1):
+        Y_prime = np.linalg.solve(MM[:,:,i], NN[:,:,i] @ Y)
+        dxi = xi[i+1] - xi[i]
+        Y += Y_prime * dxi
+
+    return Y
 
 
 if __name__ == "__main__":
     gamma = 5/3
-    omegas = [0.5, 1.0, 3.25, 3.2554, 4, 4.25, 5]
+    y0 = Y0(gamma)
 
-    xi_plot = jnp.linspace(1, 0, 1000)
+    omega = 3.1
+    delt = find_delta(omega, gamma)
+    print(f"Omega: {omega}, Delta: {delt}")
+    args = (omega, delt, gamma)
 
-    plt.figure()
+    """
+    t = (np.logspace(-40,0,2000) - 1.0) * 0.609485
+    t = t[::-1]
+    """
+    t = np.linspace(0, -100, 1000)
 
-    for omega in omegas:
-        sol = solution(omega, gamma=gamma)
+    y = solveODE(ode_sys_by_t, y0, t, DOPRI8_table, args=args)
 
-        print(sol.xi_final)
+    U = y[:, 0]
+    C = y[:, 1]
+    xi = y[:, 2]
+    print(f"Final xi: {xi[-1]}")
 
-        U_val = sol.U(xi_plot)
-        C_val = sol.C(xi_plot)
-        plt.plot(U_val, C_val, '.')
+    line = np.linspace(0, 1, 100)
 
-    line = jnp.linspace(0, 1, 100)
-    plt.plot(line, 1-line, 'r--')
-    plt.xlabel('U')
-    plt.ylabel('C')
+
+    plt.plot(U, C, ".")
+    plt.plot(line, 1 - line)
+    plt.xlabel("U")
+    plt.ylabel("C")
     #plt.xlim(0.6, 1.0)
     #plt.ylim(0.0, 0.6)
     plt.grid()
-
-    # Create the directory if it doesn't exist
-    import os
-    if not os.path.exists('plots'):
-        os.makedirs('plots')
-    plot_path = f'plots/solution_U_vs_C_omega_{omega}.png'
-    #plt.savefig(plot_path)
+    plt.title("Phase Space")
     plt.show()
-    print(f"Plot saved to {plot_path}")
-    print("Final delta:", sol.delt)
 
 
+    l = 1
+    s_arr = np.linspace(-1.1, 0.1, 400)
+    alpha = 1/(1-delt)
+    q_arr = s_arr/alpha
+    Y_arr = np.zeros((4, 400))
+    for i, q in enumerate(q_arr):
+        Y_arr[:, i] = last_per(U, C, xi, args, q, l)
 
+    Y_arr = np.log(np.abs(Y_arr))
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    for k, ax in enumerate(axes.flatten()):
+        c = ax.plot(s_arr, Y_arr[k, :], ".")
+
+        ax.set_xlabel('s')
+        ax.set_ylabel('per')
+        print(f"Y_arr[:, {k}]: {Y_arr[:, k]}")
+
+    plt.tight_layout()
+    plt.show()
+
+    l_arr = np.logspace(-2, 1, 200)
+    s_arr = np.linspace(-1.1, 0.1, 200)
+    
+    q_arr = s_arr/alpha
+
+    Y_final = np.zeros((len(q_arr), len(l_arr), 4))
+
+    Y_end_arr = np.zeros((len(q_arr), len(l_arr)))
+
+    for i, l in enumerate(l_arr):
+        print(f"Processing l={l:.5f}   ", end="\r", flush=True)
+        for j, q in enumerate(q_arr):
+            Y_final[j, i] = last_per(U, C, xi, args, q, l)
+            Y_end_arr[j, i] = np.log(np.abs(Y_end(Y_final[j, i], U[-1], C[-1], xi[-1], args, q, l)))
+
+
+    Y_final = np.log(np.abs(Y_final))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    titles = ['Y_final[0] (dG)', 'Y_final[1] (dUr)', 'Y_final[2] (dUt)', 'Y_final[3] (dP)', 'Y_end']
+    
+    # Plot Y_final components
+    for k in range(4):
+        ax = axes[k // 3, k % 3]
+        c = ax.pcolormesh(l_arr, q_arr, Y_final[:, :, k], shading='auto', cmap='viridis')
+        fig.colorbar(c, ax=ax)
+        ax.set_title(titles[k])
+        ax.set_xlabel('l')
+        ax.set_ylabel('q')
+        ax.set_xscale('log')
+
+    # Plot Y_end
+    ax = axes[1, 1]
+    c_end = ax.pcolormesh(l_arr, q_arr, Y_end_arr, shading='auto', cmap='viridis')
+    fig.colorbar(c_end, ax=ax)
+    ax.set_title(titles[4])
+    ax.set_xlabel('l')
+    ax.set_ylabel('q')
+    ax.set_xscale('log')
+
+    # Hide the unused subplot
+    axes[1, 2].axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    titles = ['Y_final[0] (dG)', 'Y_final[1] (dUr)', 'Y_final[2] (dUt)', 'Y_final[3] (dP)']
+
+    for k, ax in enumerate(axes.flatten()):
+        c = ax.pcolormesh(l_arr, q_arr, Y_final[:, :, k], shading='auto', cmap='viridis')
+        fig.colorbar(c, ax=ax)
+        ax.set_title(titles[k])
+        ax.set_xlabel('l')
+        ax.set_ylabel('q')
+        ax.set_xscale('log')
+
+    plt.tight_layout()
+    plt.show()

@@ -1,5 +1,5 @@
 import numpy as np
-from solutione import *
+from liberies.solution import *
 from functools import reduce
 
 def NNr(U, C, xi, args):

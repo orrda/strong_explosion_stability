@@ -1,111 +1,105 @@
-from diffrax import diffeqsolve, ODETerm, PIDController, SaveAt, DiscreteTerminatingEvent, DirectAdjoint
-from diffrax import Dopri5, Kvaerno5, Event, Euler, Heun, Tsit5, Dopri8, KenCarp5, Bosh3
-import optimistix as optx
-import jax.numpy as jnp
-import jax
-
-from typing import Any
 import numpy as np
-
 import matplotlib.pyplot as plt
 
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_platform_name", "cpu")
 
-class PatchedDiscreteTerminatingEvent(DiscreteTerminatingEvent):
-    root_finder: Any = None
-@jax.jit
-def delta(U, C):
+def delta0(U, C):
 	return C ** 2 - (1 - U) ** 2
 
-@jax.jit
-def delta1_xi(U, C, omega, delt, gamma):
+
+def delta1(U, C, omega, delt, gamma):
     return U * (1 - U) * (1 - U - delt) - (C ** 2) * (3 * U +(- omega + 2 * delt)/gamma)
 
-@jax.jit
-def delta2_xi(U, C, omega, delt, gamma):
+
+def delta2(U, C, omega, delt, gamma):
 	return C * (1 - U) * (1 - U - delt) - (gamma - 1) * C * U * (2 - 2 * U + delt) / 2 - (C ** 3) + (2 * delt + (gamma - 1) * omega) * (C ** 3)/(2 * gamma * (1 - U))
 
-@jax.jit
-def ode_sys_by_xi(xi, UC, args):
+
+def ode_sys_by_t(t, y, args):
     omega, delt, gamma = args
-    U=UC[0]
-    C=UC[1]
 
-    dU_dx = delta1_xi(U, C, omega, delt, gamma)
-    dC_dx = delta2_xi(U, C, omega, delt, gamma)
+    dU_dt = delta1(y[0], y[1], omega, delt, gamma)
+    dC_dt = delta2(y[0], y[1], omega, delt, gamma)
+    dXi_dt = delta0(y[0], y[1]) * y[2]
 
-    return jnp.stack([dU_dx, dC_dx])/(delta(U, C) * xi)
+    return np.stack([dU_dt, dC_dt, dXi_dt])
 
 
-def U_event(t, y, args):
-    return 0.5 - (y[0] - 0.5)**2
+def event_func(U, C):
+    return np.min([C + U - 1.0, C, U, 1 - U])
 
-def C_event(t, y, args):
-    return y[1]
 
-def sonic_event(t, y, args):
-    return y[1]**2 - (1.0 - y[0])**2
-
-import functools
-@functools.partial(jax.jit, static_argnames=['stop_at_sonic', 'save_dense', 'max_steps'])
-def solve_PDE(omega, delt, x_begin = 1, x_end = 0, gamma = 5/3, stop_at_sonic = False, save_dense=True, max_steps=10000):
-
-    U_init = 2/(gamma + 1)
-    C_init = jnp.sqrt(2 * gamma * (gamma - 1)) / (gamma + 1)
-
-    if stop_at_sonic:
-        cond_fn = lambda t, y, args, **kwargs: jnp.min(jnp.array([
-            U_event(t, y, args), 
-            C_event(t, y, args), 
-            sonic_event(t, y, args)
-        ]))
-    else:
-        cond_fn = lambda t, y, args, **kwargs: jnp.min(jnp.array([
-            U_event(t, y, args), 
-            C_event(t, y, args)
-        ]))
-
-    event = Event(cond_fn, optx.Bisection(rtol=1e-12, atol=1e-12))
-
-    term = ODETerm(ode_sys_by_xi)
-    solver = Dopri5()
-    stepsize_controller = PIDController(rtol=1e-5, atol=1e-5)
+def solveODE(func, y0, t, B_table, args=None):
+    if args is None:
+        args = ()
+        
+    c, A, b = B_table
+    stages = len(b)
+    y = np.zeros((len(t), len(y0)))
+    y[0] = y0
     
+    for i in range(len(t) - 1):
+        dt = t[i+1] - t[i]
+        k = np.zeros((stages, len(y0)))
+        
+        for s in range(stages):
+            t_s = t[i] + c[s] * dt
+            # Use dot product for explicit RK (A is strictly lower triangular)
+            y_s = y[i] + dt * np.tensordot(A[s, :s], k[:s], axes=([0], [0]))
+            k[s] = func(t_s, y_s, args)
 
-    num_sol = diffeqsolve(
-        term, 
-        solver, 
-        t0=x_begin, 
-        t1=x_end, 
-        dt0=None, 
-        y0=jnp.array([U_init, C_init]), 
-        args=(omega, delt, gamma),
-        stepsize_controller=stepsize_controller,
-        saveat=SaveAt(dense=save_dense, t1=True),
-        max_steps=max_steps,
-        throw=False,
-        event=event,
-        adjoint=DirectAdjoint() 
+        y[i+1] = y[i] + dt * np.tensordot(b, k, axes=([0], [0]))
+        if event_func(y[i+1][0], y[i+1][1]) <= 0:
+            print(f"Event triggered at t={t[i+1]:.8f}, U={y[i+1][0]:.8f}, C={y[i+1][1]:.8f}")
+            return y[:i+1]
+
+    return y
+
+def Y0(gamma):
+    U_init = 2/(gamma + 1)
+    C_init = np.sqrt(2 * gamma * (gamma - 1)) / (gamma + 1)
+    Xi_init = 1.0
+
+    return np.array([U_init, C_init, Xi_init])
+
+
+RK4_table = (
+    np.array([0, 0.5, 0.5, 1]),
+    np.array([[0, 0, 0, 0],
+              [0.5, 0, 0, 0],
+              [0, 0.5, 0, 0],
+              [0, 0, 1, 0]]),
+    np.array([1/6, 1/3, 1/3, 1/6])
+)
+
+DOPRI8_table = (
+    np.array([0, 1/3, 2/5, 1, 2/3, 4/5]),
+        np.array([[0, 0, 0, 0, 0, 0],
+                  [1/3, 0, 0, 0, 0, 0],
+                  [4/25, 6/25, 0, 0, 0, 0],
+                  [1/4, -3, 15/4, 0, 0, 0],
+                  [2/27, 10/9, -50/81, 8/81, 0, 0],
+                  [2/25, 12/25, 2/15, 8/75, 0, 0]]),
+        np.array([23/192, 0, 125/192, 0, -27/64, 125/192])
     )
 
-    return num_sol
+
 
 
 if __name__ == "__main__":
-    omega = 4.25
-    delt = 0.25
-    sol = solve_PDE(omega, delt, x_begin=1, x_end=0, gamma = 5/3, stop_at_sonic=True)
-    last_xi = sol.ts[-1]
+    t = np.linspace(0, -510, 10000)
+    y0 = Y0(5/3)
 
-    xi_arr = jnp.linspace(last_xi, 1, 100)
+    y = solveODE(ode_sys_by_t, y0, t, RK4_table, args=(3.2554, 0, 5/3))
 
-    for xi in xi_arr:
-        U = sol.evaluate(xi)[0]
-        C = sol.evaluate(xi)[1]
-        plt.plot(U, C, 'bo')
-    line = jnp.linspace(0, 1, 100)
-    plt.plot(line, 1-line, 'r--')
+
+    U = y[:, 0]
+    C = y[:, 1]
+
+    plt.plot(U, C, ".")
     plt.xlabel("U")
     plt.ylabel("C")
+    plt.xlim(0.6, 1.0)
+    plt.ylim(0.0, 0.6)
+    plt.grid()
+    plt.title("Phase Space")
     plt.show()
